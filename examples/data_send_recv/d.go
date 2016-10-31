@@ -91,7 +91,7 @@ func do_send() {
 		log.Println("setting cc: true, true")
 		sess.Set_congestion_control(true, true)
 	}
-	if err = sess.Start_sender(0, 1024*1024*4, 0, 0, 0, 0); err != nil {
+	if err := sess.Start_sender(0, 1024*1024*4, 0, 0, 0, 0); err != nil {
 		log.Println(err)
 		return
 	}

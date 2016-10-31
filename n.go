@@ -9,8 +9,10 @@ package norm
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -26,6 +28,10 @@ var (
 	E_false                         = errors.New("false")
 	E_sender_sessions_not_destroyed error
 )
+
+type apier interface {
+	call()
+}
 
 type Event struct {
 	Type    Event_type
@@ -242,8 +248,10 @@ const (
 type Instance struct {
 	debug        bool
 	wg           *sync.WaitGroup
+	ctx          context.Context
 	handle       norm_instance_handle
 	cmdc         chan interface{}
+	api          chan apier
 	nevent       norm_event
 	sess_db      refdb
 	object_id_ct uint64
@@ -428,33 +436,36 @@ func new_cmd_mgr(icmdc func() chan<- interface{}) *cmd_mgr {
 }
 
 type Session struct {
-	events                               Event_type // bit mask
-	c                                    chan *Event
-	enable, enable2                      bool
-	bind_address, sender_address         string
-	port                                 uint16
-	i                                    int
-	size                                 uint
-	segment_size, block_size, num_parity uint16 // Start_sender()
-	handle                               norm_session_handle
-	node_id                              norm_node_id
-	acking_status                        Acking_status
-	sync_policy                          Sync_policy
-	nacking_mode                         Nacking_mode
-	repair_boundary                      Repair_boundary
-	tx_cache_bounds_size_max             uint
-	tx_cache_bounds_count_min            uint32
-	tx_cache_bounds_count_max            uint32
-	ttl_tos                              uint8
-	double, double2                      float64
-	probe_mode                           Probe_mode
-	file_name                            string
-	u8                                   uint8
-	buf                                  *bytes.Buffer
-	id                                   norm_session_id
-	objects                              map[norm_object_handle]*Object
-	obj                                  *Object
-	written                              int
+	ctx                          context.Context
+	api                          chan apier
+	events                       Event_type // bit mask
+	c                            chan *Event
+	enable, enable2              bool
+	bind_address, sender_address string
+	port                         uint16
+	i                            int
+	size                         uint
+	// segment_size, block_size, num_parity uint16 // Start_sender()
+	handle                    norm_session_handle
+	node_id                   norm_node_id
+	acking_status             Acking_status
+	sync_policy               Sync_policy
+	nacking_mode              Nacking_mode
+	repair_boundary           Repair_boundary
+	tx_cache_bounds_size_max  uint
+	tx_cache_bounds_count_min uint32
+	tx_cache_bounds_count_max uint32
+	ttl_tos                   uint8
+	double, double2           float64
+	probe_mode                Probe_mode
+	file_name                 string
+	u8                        uint8
+	buf                       *bytes.Buffer
+	id                        norm_session_id
+	objects                   map[norm_object_handle]*Object
+	obj                       *Object
+	written                   int
+	done                      chan struct{}
 	*cmd_mgr
 }
 
@@ -468,6 +479,8 @@ func (o *Instance) Create_session(address string, port uint16, node_id Node_id) 
 	o.lock.Lock()
 	defer o.lock.Unlock()
 	r = &Session{
+		ctx:          o.ctx,
+		api:          o.api,
 		c:            make(chan *Event, 100),
 		events:       Event_type_all,
 		objects:      map[norm_object_handle]*Object{},
@@ -577,6 +590,45 @@ func (o *Session) Set_tx_rate_bounds(rate_min, rate_max float64) {
 	<-o.errc
 }
 
+type session_start_sender struct {
+	sess                                 *Session
+	id                                   uint32
+	buffer_space                         uint
+	segment_size, block_size, num_parity uint16
+	fec_id                               uint8
+	err                                  error
+	call_done                            chan struct{}
+}
+
+func (o session_start_sender) send() error {
+	if o.id == 0 {
+		o.id = uint32(time.Now().Unix())
+	}
+	if o.buffer_space == 0 {
+		o.buffer_space = 1024 * 1024
+	}
+	if o.segment_size == 0 {
+		o.segment_size = 1400
+	}
+	if o.block_size == 0 {
+		o.block_size = 64
+	}
+	if o.num_parity == 0 {
+		o.num_parity = 16
+	}
+	select {
+	case <-o.sess.ctx.Done():
+	case o.sess.api <- o:
+		log.Println("sent api")
+		select {
+		case <-o.sess.ctx.Done():
+		case <-o.call_done:
+			return o.err
+		}
+	}
+	return context.Canceled
+}
+
 // Sender func
 //
 // defaults: id: 0 = set to time.Now(), buffer_space: 0 = 1024 * 1024,
@@ -585,37 +637,47 @@ func (o *Session) Set_tx_rate_bounds(rate_min, rate_max float64) {
 // https://htmlpreview.github.io/?https://github.com/aletheia7/norm/blob/master/norm/doc/NormDeveloperGuide.html#NormStartSender
 //
 func (o *Session) Start_sender(id uint32, buffer_space uint, segment_size, block_size, num_parity uint16, fec_id uint8) error {
-	o.lock.Lock()
-	defer o.lock.Unlock()
-	if id == 0 {
-		o.id = norm_session_id(uint32(time.Now().Unix()))
-	} else {
-		o.id = norm_session_id(id)
-	}
-	if buffer_space == 0 {
-		o.size = 1024 * 1024
-	} else {
-		o.size = buffer_space
-	}
-	if segment_size == 0 {
-		o.segment_size = 1400
-	} else {
-		o.segment_size = segment_size
-	}
-	if block_size == 0 {
-		o.block_size = 64
-	} else {
-		o.block_size = block_size
-	}
-	if num_parity == 0 {
-		o.num_parity = 16
-	} else {
-		o.num_parity = num_parity
-	}
-	o.u8 = fec_id
-	o.cmd = icmd_start_sender
-	o.icmdc() <- o
-	return <-o.errc
+	return session_start_sender{
+		sess:         o,
+		id:           id,
+		buffer_space: buffer_space,
+		segment_size: segment_size,
+		block_size:   block_size,
+		num_parity:   num_parity,
+		fec_id:       fec_id,
+		call_done:    make(chan struct{}),
+	}.send()
+	// o.lock.Lock()
+	// defer o.lock.Unlock()
+	// if id == 0 {
+	// 	o.id = norm_session_id(uint32(time.Now().Unix()))
+	// } else {
+	// 	o.id = norm_session_id(id)
+	// }
+	// if buffer_space == 0 {
+	// 	o.size = 1024 * 1024
+	// } else {
+	// 	o.size = buffer_space
+	// }
+	// if segment_size == 0 {
+	// 	o.segment_size = 1400
+	// } else {
+	// 	o.segment_size = segment_size
+	// }
+	// if block_size == 0 {
+	// 	o.block_size = 64
+	// } else {
+	// 	o.block_size = block_size
+	// }
+	// if num_parity == 0 {
+	// 	o.num_parity = 16
+	// } else {
+	// 	o.num_parity = num_parity
+	// }
+	// o.u8 = fec_id
+	// o.cmd = icmd_start_sender
+	// o.icmdc() <- o
+	// return <-o.errc
 }
 
 // https://htmlpreview.github.io/?https://github.com/aletheia7/norm/blob/master/norm/doc/NormDeveloperGuide.html#NormStopSender
@@ -673,10 +735,10 @@ func (o *Session) Data_enqueue(data, info []byte) (*Object, error) {
 	o.lock.Lock()
 	defer o.lock.Unlock()
 	o.obj = new_object(o.icmdc, data, info, Object_type_data)
-	if int(o.segment_size) < o.obj.info.Len() {
-		o.release(o.obj.handle)
-		return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
-	}
+	// if int(o.segment_size) < o.obj.info.Len() {
+	// 	o.release(o.obj.handle)
+	// 	return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
+	// }
 	o.cmd = icmd_data_enqueue
 	o.icmdc() <- o
 	return o.obj, <-o.errc
@@ -976,10 +1038,10 @@ func (o *Session) Stream_open(buffer_size int, info []byte) (obj *Object, err er
 	o.lock.Lock()
 	defer o.lock.Unlock()
 	o.obj = new_object(o.icmdc, nil, info, Object_type_stream)
-	if int(o.segment_size) < o.obj.info.Len() {
-		o.release(o.obj.handle)
-		return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
-	}
+	// if int(o.segment_size) < o.obj.info.Len() {
+	// 	o.release(o.obj.handle)
+	// 	return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
+	// }
 	o.cmd = icmd_stream_open
 	o.icmdc() <- o
 	if e := <-o.errc; e != nil {
@@ -1011,10 +1073,10 @@ func (o *Session) File_enqueue(file_name string, info []byte) (*Object, error) {
 	o.lock.Lock()
 	defer o.lock.Unlock()
 	o.obj = new_object(o.icmdc, nil, info, Object_type_file)
-	if int(o.segment_size) < o.obj.info.Len() {
-		o.release(o.obj.handle)
-		return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
-	}
+	// if int(o.segment_size) < o.obj.info.Len() {
+	// 	o.release(o.obj.handle)
+	// 	return nil, fmt.Errorf("info size exeeds segment size: %v > %v", o.obj.info.Len(), o.segment_size)
+	// }
 	o.file_name = file_name
 	o.cmd = icmd_file_enqueue
 	o.icmdc() <- o

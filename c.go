@@ -15,6 +15,7 @@ import "C"
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -98,6 +99,8 @@ func create_instance(wg *sync.WaitGroup) (r *Instance, err error) {
 	r = &Instance{
 		wg:      wg,
 		sess_db: refdb{},
+		ctx:     context.Background(),
+		api:     make(chan apier, 200),
 	}
 	r.cmd_mgr = new_cmd_mgr(nil)
 	r.cmdc = make(chan interface{}, 200)
@@ -409,6 +412,16 @@ func (o refdb) remove(sess *Session) {
 	}
 }
 
+func (o session_start_sender) call() {
+	if !C.NormStartSender(o.sess.handle, C.NormSessionId(o.id), C.UINT32(o.buffer_space), C.UINT16(o.segment_size), C.UINT16(o.block_size), C.UINT16(o.num_parity), C.UINT8(o.fec_id)) {
+		o.err = E_false
+	}
+	if o.call_done == nil {
+		panic("call_done is nil")
+	}
+	o.call_done <- struct{}{}
+}
+
 func (o *Instance) loop() {
 	defer o.wg.Done()
 	var desc *os.File
@@ -449,6 +462,9 @@ func (o *Instance) loop() {
 	}()
 	for {
 		select {
+		case a := <-o.api:
+			log.Printf("%#v\n", a)
+			a.call()
 		case i := <-o.cmdc:
 			switch t := i.(type) {
 			case icmd:
@@ -615,12 +631,12 @@ func (o *Instance) loop() {
 					} else {
 						t.errc <- E_false
 					}
-				case icmd_start_sender:
-					if C.NormStartSender(t.handle, C.NormSessionId(t.id), C.UINT32(t.size), C.UINT16(t.segment_size), C.UINT16(t.block_size), C.UINT16(t.num_parity), C.UINT8(t.u8)) {
-						t.errc <- nil
-					} else {
-						t.errc <- E_false
-					}
+				// case icmd_start_sender:
+				// 	if C.NormStartSender(t.handle, C.NormSessionId(t.id), C.UINT32(t.size), C.UINT16(t.segment_size), C.UINT16(t.block_size), C.UINT16(t.num_parity), C.UINT8(t.u8)) {
+				// 		t.errc <- nil
+				// 	} else {
+				// 		t.errc <- E_false
+				// 	}
 				case icmd_stop_sender:
 					C.NormStopSender(t.handle)
 					t.release_all()
