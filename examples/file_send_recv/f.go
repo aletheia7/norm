@@ -27,10 +27,10 @@ var (
 	debug_instance   = flag.Bool("di", false, "debug norm.Instance, not NormSetDebug()")
 	norm_debug_level = flag.Uint("d", 0, "NormSetDebugLevel(): 0-12")
 	s_addr           = flag.String("saddr", "127.0.0.1", "sender session address")
-	s_port           = flag.Uint("sport", 6003, "sender session port")
+	s_port           = flag.Int("sport", 6003, "sender session port")
 	s_node_id        = flag.Uint("snodeid", 6, "sender node id")
 	r_addr           = flag.String("raddr", "0.0.0.0", "receiver session address")
-	r_port           = flag.Uint("rport", 6003, "receiver session port")
+	r_port           = flag.Int("rport", 6003, "receiver session port")
 	r_node_id        = flag.Uint("rnodeid", 7, "receiver node id")
 	r_cache_path     = flag.String("rcachepath", ``, "receiver cache path directory")
 )
@@ -48,13 +48,9 @@ func do_send() {
 	i.Set_debug_level(*norm_debug_level)
 	log.Printf("norm debug level: %v -> %v\n", old, *norm_debug_level)
 	i.Set_debug(*debug_instance)
-	defer func() {
-		if err := i.Destroy(); err != nil {
-			log.Println(err)
-		}
-	}()
+	defer i.Destroy()
 	log.Printf("sender session: %v:%v\n", *s_addr, *s_port)
-	sess, err := i.Create_session(*s_addr, uint16(*s_port), norm.Node_id(*s_node_id))
+	sess, err := i.Create_session(*s_addr, *s_port, norm.Node_id(*s_node_id))
 	if err != nil {
 		log.Println(err)
 		return
@@ -64,13 +60,13 @@ func do_send() {
 	sess.Set_tx_only(true, false)
 	sess.Set_events(norm.Event_type_all &^ (norm.Event_type_grtt_updated | norm.Event_type_tx_rate_changed))
 	defer sess.Destroy()
-	if err = sess.Add_acking_node(norm.Node_id((*r_node_id))); err != nil {
+	if !sess.Add_acking_node(norm.Node_id((*r_node_id))) {
 		log.Println("Add_acking_node", err)
 		return
 	}
 	sess.Set_tx_cache_bounds(100e+6, 1000, 2000)
 	sess.Set_congestion_control(true, true)
-	if err = sess.Start_sender(0, 0, 0, 0, 0, 0); err != nil {
+	if !sess.Start_sender(0, 0, 0, 0, 0, 0) {
 		log.Println(err)
 		return
 	}
@@ -122,11 +118,7 @@ func do_recv() {
 	i.Set_debug_level(*norm_debug_level)
 	log.Printf("norm debug level: %v -> %v\n", old, *norm_debug_level)
 	i.Set_debug(*debug_instance)
-	defer func() {
-		if err := i.Destroy(); err != nil {
-			log.Println(err)
-		}
-	}()
+	defer i.Destroy()
 	cp, err := os.Getwd()
 	if err != nil {
 		log.Println(err)
@@ -141,7 +133,7 @@ func do_recv() {
 		return
 	}
 	log.Printf("receiver session: %v:%v\n", *r_addr, *r_port)
-	sess, err := i.Create_session(*r_addr, uint16(*r_port), norm.Node_id(*r_node_id))
+	sess, err := i.Create_session(*r_addr, *r_port, norm.Node_id(*r_node_id))
 	if err != nil {
 		log.Println(err)
 	}
@@ -150,7 +142,7 @@ func do_recv() {
 	sess.Set_events(norm.Event_type_all &^ norm.Event_type_grtt_updated)
 	sess.Set_default_unicast_nack(true)
 	sess.Set_rx_cache_limit(4096)
-	if err = sess.Start_receiver(1024 * 1024); err != nil {
+	if !sess.Start_receiver(1024 * 1024) {
 		log.Println(err)
 		return
 	}
