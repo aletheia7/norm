@@ -380,12 +380,14 @@ func (o *Instance) obj() *Object {
 }
 
 type Session struct {
-	i       *Instance
-	events  Event_type // bit mask
-	c       chan *Event
-	handle  norm_session_handle
-	objects map[norm_object_handle]*Object
-	obj     *Object
+	i              *Instance
+	events         Event_type // bit mask
+	c              chan *Event
+	handle         norm_session_handle
+	objects        map[norm_object_handle]*Object
+	obj            *Object
+	user_data_lock sync.Mutex
+	user_data      interface{}
 }
 
 // node_id: 0, set to time.Now()
@@ -981,15 +983,22 @@ func (o *Session) Set_tx_robust_factor(factor int) {
 
 // Sender func
 //
-// todo
-//
-func (o *Session) Get_user_data() {}
+func (o *Session) Get_user_data() interface{} {
+	o.user_data_lock.Lock()
+	defer o.user_data_lock.Unlock()
+	return o.user_data
+}
 
 // Sender func
 //
-// todo
+// Set_user_data stores data with the Session.
+// Set_user_data does not store user_data in Norm.
 //
-func (o *Session) Set_user_data() {}
+func (o *Session) Set_user_data(user_data interface{}) {
+	o.user_data_lock.Lock()
+	defer o.user_data_lock.Unlock()
+	o.user_data = user_data
+}
 
 func (o *Session) release(oh norm_object_handle) {
 	if obj, ok := o.objects[oh]; ok {
