@@ -43,6 +43,11 @@ file_send_recv -h
 file_send_recv -r &
 file_send_recv -s
 ```
+#### NORM Support
+
+  - [NORM Users and Developers List](http://pf.itd.nrl.navy.mil/mailman/listinfo/norm-dev)
+  - [List Archive](http://pf.itd.nrl.navy.mil/pipermail/norm-dev/)
+
 #### License 
 
 Use of this source code is governed by a BSD-2-Clause license that can be found
