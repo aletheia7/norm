@@ -649,6 +649,7 @@ void NormNodeSetRxRobustFactor(NormNodeHandle   remoteSender,
 
 NORM_API_LINKAGE
 bool NormPreallocateRemoteSender(NormSessionHandle  sessionHandle,
+                                 unsigned long      bufferSize,
                                  UINT16             segmentSize, 
                                  UINT16             numData, 
                                  UINT16             numParity,

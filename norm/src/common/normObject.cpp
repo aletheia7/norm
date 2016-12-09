@@ -160,7 +160,6 @@ bool NormObject::Open(const NormObjectSize& objectSize,
     // Init pending_mask (everything pending)
     // Note the pending_mask and repair_mask both need to be inited with a
     //       "rangeMask" according to their fecId (e.g. 24-bit mask for some)!!!
-    
     if (!pending_mask.Init(numBlocks.LSB(), fec_block_mask))
     {
         PLOG(PL_FATAL, "NormObject::Open() init pending_mask (%lu) error: %s\n", 
@@ -315,6 +314,7 @@ bool NormObject::HandleInfoRequest(bool holdoff)
     return increasedRepair;
 }  // end NormObject::HandleInfoRequest()
 
+/*
 bool NormObject::HandleBlockRequest(const NormBlockId& firstId, const NormBlockId& lastId)
 {
     PLOG(PL_TRACE, "NormObject::HandleBlockRequest() node>%lu blk>%lu -> blk>%lu\n", 
@@ -339,6 +339,42 @@ bool NormObject::HandleBlockRequest(const NormBlockId& firstId, const NormBlockI
         Increment(nextId);
     }
     return increasedRepair;
+}  // end NormObject::HandleBlockRequest();
+*/
+        
+bool NormObject::HandleBlockRequest(const NormBlockId& firstId, const NormBlockId& lastId)
+{
+    PLOG(PL_TRACE, "NormObject::HandleBlockRequest() node>%lu blk>%lu -> blk>%lu\n", 
+                    (unsigned long)LocalNodeId(), 
+                    (unsigned long)firstId.GetValue(), 
+                    (unsigned long)lastId.GetValue());
+    bool blockInRange = true;
+    NormBlockId nextId = firstId;
+    while (Compare(nextId, lastId) <= 0)
+    {
+        if (!repair_mask.Test(nextId.GetValue()))
+        {
+            // (TBD) these tests can probably go away if everything else is done right
+            if (!pending_mask.CanSet(nextId.GetValue()))
+            {
+                PLOG(PL_ERROR, "NormObject::HandleBlockRequest() pending_mask.CanSet(%lu) error\n",
+                                (unsigned long)nextId.GetValue());
+                blockInRange = false;
+                if (IsStream())
+                    static_cast<NormStreamObject*>(this)->UnlockBlock(nextId);
+            }
+            else if (!repair_mask.Set(nextId.GetValue()))
+            {
+                PLOG(PL_ERROR, "NormObject::HandleBlockRequest() repair_mask.Set(%lu) error\n",
+                                (unsigned long)nextId.GetValue());
+                blockInRange = false;
+                if (IsStream())
+                    static_cast<NormStreamObject*>(this)->UnlockBlock(nextId);
+            }  
+        }
+        Increment(nextId);
+    }
+    return blockInRange;
 }  // end NormObject::HandleBlockRequest();
 
 
@@ -403,6 +439,29 @@ bool NormObject::TxResetBlocks(const NormBlockId& firstId, const NormBlockId& la
     return increasedRepair;
 }  // end NormObject::TxResetBlocks()
 
+bool NormObject::TxUpdateBlock(NormBlock*       theBlock, 
+                               NormSegmentId    firstSegmentId, 
+                               NormSegmentId    lastSegmentId,
+                               UINT16           numErasures)
+{
+    NormBlockId blockId = theBlock->GetId();
+    if (pending_mask.CanSet(blockId.GetValue()))
+    {
+        if (theBlock->TxUpdate(firstSegmentId, lastSegmentId, 
+                               GetBlockSize(blockId), nparity, 
+                               numErasures))
+        {
+            pending_mask.Set(blockId.GetValue());
+            return true;
+        }
+    }
+    else if (IsStream())
+    {
+        static_cast<NormStreamObject*>(this)->UnlockBlock(blockId);
+    }
+    return false;
+}  // end NormObject::TxUpdateBlock()
+
 bool NormObject::ActivateRepairs()
 {
     bool repairsActivated = false;
@@ -428,20 +487,16 @@ bool NormObject::ActivateRepairs()
         UINT16 autoParity = session.SenderAutoParity();
         do
         {
-            NormBlock* block = block_buffer.Find(nextId);
-            if (block) block->TxReset(GetBlockSize(nextId), nparity, autoParity, segment_size);
-            // (TBD) This check can be eventually eliminated if everything else is done right
-            if (!pending_mask.Set(nextId.GetValue()))
-            { 
-                PLOG(PL_ERROR, "NormObject::ActivateRepairs() pending_mask.Set(%lu) error 1!\n", 
-                                (unsigned long)nextId.GetValue());
-                if (block) block->ClearPending();
-                if (IsStream())
-                    static_cast<NormStreamObject*>(this)->UnlockBlock(nextId);
-            }
-            else
+            if (pending_mask.CanSet(nextId.GetValue()))
             {
+                NormBlock* block = block_buffer.Find(nextId);
+                if (NULL != block) block->TxReset(GetBlockSize(nextId), nparity, autoParity, segment_size);
+                pending_mask.Set(nextId.GetValue());
                 repairsActivated = true;
+            }
+            else if (IsStream())
+            {
+                static_cast<NormStreamObject*>(this)->UnlockBlock(nextId);
             }
             repair_mask.Unset(nextId.GetValue());
             Increment(nextId);
@@ -449,6 +504,8 @@ bool NormObject::ActivateRepairs()
         ASSERT(!repair_mask.IsSet());
     }
     // Activate partial block (segment) repairs
+    // TBD - Can we make this more efficient for larger block_buffer sizes
+    //       (e.g., have a separate list (or bitmask) of repair pending blocks?)
     NormBlockBuffer::Iterator iterator(block_buffer);
     NormBlock* block;
     while ((block = iterator.GetNextBlock()))
@@ -459,8 +516,6 @@ bool NormObject::ActivateRepairs()
                             (unsigned long)LocalNodeId(), (UINT16)transport_id, (unsigned long)block->GetId().GetValue());
             if (!pending_mask.Set(block->GetId().GetValue()))
             {
-                PLOG(PL_ERROR, "NormObject::ActivateRepairs() pending_mask.Set(%lu) error 2!\n", 
-                                (unsigned long)block->GetId().GetValue());
                 block->ClearPending();
                 if (IsStream())
                     static_cast<NormStreamObject*>(this)->UnlockBlock(block->GetId());
@@ -630,6 +685,8 @@ bool NormObject::FindRepairIndex(NormBlockId& blockId, NormSegmentId& segmentId)
         segmentId = 0;
         return true;   
     }
+    // TBD - Can we make this more efficient for large block_buffer sizes
+    // (e.g., by maintaining a separate bitmask for blocks needing partial repair)
     NormBlockBuffer::Iterator iterator(block_buffer);
     NormBlock* block;
     while ((block = iterator.GetNextBlock()))
@@ -661,6 +718,8 @@ bool NormObject::IsRepairPending()
     //ASSERT(NULL == sender);
     if (repair_info) return true;
     if (repair_mask.IsSet()) return true;
+    // TBD - Can we make this more efficient for large block_buffer sizes
+    // (e.g., by maintaining a separate bitmask for blocks needing partial repair)
     NormBlockBuffer::Iterator iterator(block_buffer);
     NormBlock* block;
     while ((block = iterator.GetNextBlock()))
@@ -1588,7 +1647,7 @@ void NormObject::HandleObjectMessage(const NormObjectMsg& msg,
     }  // end if/else (NORM_MSG_INFO)
 }  // end NormObject::HandleObjectMessage()
 
-// Returns source symbol segments to pool for first block with such resources
+// Returns source symbol segments to pool for ordinally _first_ block with such resources
 bool NormObject::ReclaimSourceSegments(NormSegmentPool& segmentPool)
 {
     NormBlockBuffer::Iterator iterator(block_buffer);
@@ -1612,7 +1671,7 @@ bool NormObject::ReclaimSourceSegments(NormSegmentPool& segmentPool)
 }  // end NormObject::ReclaimSourceSegments()
 
 
-// Steals non-pending block (oldest first) for _sender_ resource management
+// Steals non-pending block (ordinally _first_) for _sender_ resource management
 // (optionally excludes block indicated by blockId)
 NormBlock* NormObject::StealNonPendingBlock(bool excludeBlock, NormBlockId excludeId)
 {
@@ -1766,7 +1825,6 @@ bool NormObject::NextSenderMsg(NormObjectMsg* msg)
             ASSERT(0);
             return false;
     }
-    
     if (pending_info)
     {
         // (TBD) set REPAIR_FLAG for retransmitted info
@@ -1775,200 +1833,218 @@ bool NormObject::NextSenderMsg(NormObjectMsg* msg)
         pending_info = false;
         return true;
     }
+    // This block gets the next pending block/segment
+    // (The loop handles NORM_OBJECT_STREAM advancement 
+    //  without the prior approach that used recursion)
+    NormDataMsg* data = static_cast<NormDataMsg*>(msg);
+    NormBlock* block = NULL;
     NormBlockId blockId;
-    if (!GetFirstPending(blockId)) 
+    UINT16 numData = 0;
+    NormSegmentId segmentId;
+    bool squelchQueued = false;
+    while (NULL == block)
     {
-        // Attempt to advance stream (probably had been repair-delayed)
-        if (IsStream())
+        if (!GetFirstPending(blockId)) 
         {
-            if (static_cast<NormStreamObject*>(this)->StreamAdvance())
-            {   
-                return NextSenderMsg(msg);
+            // Attempt to advance stream (probably had been repair-delayed)
+            if (IsStream())
+            {
+                if (static_cast<NormStreamObject*>(this)->StreamAdvance())
+                {   
+                    continue;  // return NextSenderMsg(msg);
+                }
+                else
+                {
+                    //ASSERT(IsRepairPending()); 
+                    return false;
+                }
             }
             else
             {
-                //ASSERT(IsRepairPending()); 
+                PLOG(PL_FATAL, "NormObject::NextSenderMsg() pending object w/ no pending blocks?!\n");
                 return false;
             }
         }
-        else
+        numData = GetBlockSize(blockId);
+        block = block_buffer.Find(blockId);
+        if (!block)
         {
-            PLOG(PL_FATAL, "NormObject::NextSenderMsg() pending object w/ no pending blocks?!\n");
-            return false;
+           if (NULL == (block = session.SenderGetFreeBlock(transport_id, blockId)))
+           {
+                PLOG(PL_INFO, "NormObject::NextSenderMsg() node>%lu warning: sender resource " 
+                              "constrained (no free blocks).\n", (unsigned long)LocalNodeId());
+                return false; 
+           }
+           // Load block with zero initialized parity segments
+           UINT16 totalBlockLen = numData + nparity;
+           for (UINT16 i = numData; i < totalBlockLen; i++)
+           {
+                char* s = session.SenderGetFreeSegment(transport_id, blockId);
+                if (s)
+                {
+                    UINT16 payloadMax = segment_size + NormDataMsg::GetStreamPayloadHeaderLength();
+#ifdef SIMULATE
+                    payloadMax = MIN(payloadMax, SIM_PAYLOAD_MAX);
+#endif // SIMULATE
+                    memset(s, 0, payloadMax);  // extra byte for msg flags
+                    block->AttachSegment(i, s); 
+                }
+                else
+                {
+                    PLOG(PL_INFO, "NormObject::NextSenderMsg() node>%lu warning: sender resource " 
+                                  "constrained (no free segments).\n", (unsigned long)LocalNodeId());
+                    session.SenderPutFreeBlock(block);
+                    return false;
+                }
+           }    
+           block->TxInit(blockId, numData, session.SenderAutoParity());  
+           //if (blockId < max_pending_block) 
+           if (Compare(blockId, max_pending_block) < 0)
+               block->SetFlag(NormBlock::IN_REPAIR);
+           while (!block_buffer.Insert(block))
+           {
+               //ASSERT(STREAM == type);
+               //if (blockId > block_buffer.RangeLo())
+               if (Compare(blockId, block_buffer.RangeLo()) > 0)
+               {
+                   NormBlock* lowBlock = block_buffer.Find(block_buffer.RangeLo());
+                   NormBlockId lowBlockId = lowBlock->GetId();
+                   bool push = static_cast<NormStreamObject*>(this)->GetPushMode();
+                   if (!push && (lowBlock->IsRepairPending() || IsRepairSet(lowBlockId)))
+                   {
+                       // Pending repairs delaying stream advance
+                       PLOG(PL_DEBUG, "NormObject::NextSenderMsg() node>%lu pending repairs delaying stream progress\n", 
+                                        (unsigned long)LocalNodeId());
+                       session.SenderPutFreeBlock(block);
+                       return false; 
+                   }
+                   else
+                   {
+                        // Prune old non-pending block (or even pending if "push" enabled stream)
+                        block_buffer.Remove(lowBlock);
+                        repair_mask.Unset(lowBlockId.GetValue());  // just in case
+                        pending_mask.Unset(lowBlockId.GetValue());
+                        if (IsStream())  // always true
+                            static_cast<NormStreamObject*>(this)->UnlockBlock(lowBlockId);
+                        session.SenderPutFreeBlock(lowBlock);
+                        continue;
+                   }
+               }
+               else if (IsStream())
+               {
+                    PLOG(PL_WARN, "NormObject::NextSenderMsg() node>%lu Warning! can't repair old stream block\n", 
+                                    (unsigned long)LocalNodeId());
+                    if (!squelchQueued) 
+                    {
+                        session.SenderQueueSquelch(transport_id);
+                        squelchQueued = true;
+                    }
+                    session.SenderPutFreeBlock(block);
+                    repair_mask.Unset(blockId.GetValue());  // just in case
+                    pending_mask.Unset(blockId.GetValue());
+                    // Unlock (set to non-pending status) the corresponding stream_buffer block
+                    static_cast<NormStreamObject*>(this)->UnlockBlock(blockId); 
+                    block = NULL;
+                    break; //return NextSenderMsg(msg);
+               }
+               else
+               {
+                    PLOG(PL_FATAL, "NormObject::NextSenderMsg() invalid non-stream state!\n");
+                    ASSERT(0);
+                    return false;
+               }
+           }  // end while (!block_buffer.Insert())
+           if (NULL == block) continue;
+        }  // end if (!block)
+        if (!block->GetFirstPending(segmentId)) 
+        {
+            PLOG(PL_ERROR, "NormObject::NextSenderMsg() warning: found pending block %lu with nothing pending!?\n", 
+                            (unsigned long)blockId.GetValue());
+            pending_mask.Unset(blockId.GetValue());
+            block = NULL;
+            continue; //return NextSenderMsg(msg);
         }
-    }
-    NormDataMsg* data = (NormDataMsg*)msg;
-    UINT16 numData = GetBlockSize(blockId);
-    NormBlock* block = block_buffer.Find(blockId);
-    if (!block)
-    {
-       if (NULL == (block = session.SenderGetFreeBlock(transport_id, blockId)))
-       {
-            PLOG(PL_INFO, "NormObject::NextSenderMsg() node>%lu warning: sender resource " 
-                          "constrained (no free blocks).\n", (unsigned long)LocalNodeId());
-            return false; 
-       }
-       // Load block with zero initialized parity segments
-       UINT16 totalBlockLen = numData + nparity;
-       for (UINT16 i = numData; i < totalBlockLen; i++)
-       {
-            char* s = session.SenderGetFreeSegment(transport_id, blockId);
-            if (s)
+        // Try to read segment 
+        if (segmentId < numData)
+        {
+            // Try to read data segment (Note "ReadSegment" copies in offset/length info also)
+            char* buffer = data->AccessPayload(); 
+            UINT16 payloadLength = ReadSegment(blockId, segmentId, buffer);
+            if (0 == payloadLength)
             {
+                // (TBD) deal with read error 
+                //(for streams, it currently means the stream is pending, but app hasn't yet written data)
+                if (!IsStream())
+                { 
+                    PLOG(PL_FATAL, "NormObject::NextSenderMsg() ReadSegment() error\n"); 
+                    return false;
+                }
+                else if (static_cast<NormStreamObject*>(this)->IsOldBlock(blockId))
+                {
+                    PLOG(PL_ERROR, "NormObject::NextSenderMsg() node>%lu Warning! can't repair old stream segment\n", 
+                                    (unsigned long)LocalNodeId());
+                    block->UnsetPending(segmentId); 
+                    if (!block->IsPending())
+                    {
+                        // End of old block reached
+                        block->ResetParityCount(nparity);
+                        pending_mask.Unset(blockId.GetValue()); 
+                        // for EMCON sending, mark NORM_INFO for re-transmission, if applicable
+                        if (session.SndrEmcon() && HaveInfo())
+                            pending_info = true;
+                    }
+                    block = NULL;
+                    continue;  //return NextSenderMsg(msg);
+                }
+                else
+                {
+                    // App hasn't written data for this block yet
+                    return false;
+                }
+            }
+            data->SetPayloadLength(payloadLength);
+
+            // Perform incremental FEC encoding as needed
+            if ((block->ParityReadiness() == segmentId) && (0 != nparity)) 
+               // (TBD) && ((incrementalParity == true) || (auto_parity != 0))
+            {
+                // (TBD) for non-stream objects, catch alternate "last block/segment len"
+                // ZERO pad any "runt" segments before encoding
                 UINT16 payloadMax = segment_size + NormDataMsg::GetStreamPayloadHeaderLength();
 #ifdef SIMULATE
                 payloadMax = MIN(payloadMax, SIM_PAYLOAD_MAX);
 #endif // SIMULATE
-                memset(s, 0, payloadMax);  // extra byte for msg flags
-                block->AttachSegment(i, s); 
-            }
-            else
-            {
-                PLOG(PL_INFO, "NormObject::NextSenderMsg() node>%lu warning: sender resource " 
-                              "constrained (no free segments).\n", (unsigned long)LocalNodeId());
-                session.SenderPutFreeBlock(block);
-                return false;
-            }
-       }    
-       block->TxInit(blockId, numData, session.SenderAutoParity());  
-       //if (blockId < max_pending_block) 
-       if (Compare(blockId, max_pending_block) < 0)
-           block->SetFlag(NormBlock::IN_REPAIR);
-       while (!block_buffer.Insert(block))
-       {
-           //ASSERT(STREAM == type);
-           //if (blockId > block_buffer.RangeLo())
-           if (Compare(blockId, block_buffer.RangeLo()) > 0)
-           {
-               NormBlock* lowBlock = block_buffer.Find(block_buffer.RangeLo());
-               NormBlockId lowBlockId = lowBlock->GetId();
-               bool push = static_cast<NormStreamObject*>(this)->GetPushMode();
-               if (!push && (lowBlock->IsRepairPending() || IsRepairSet(lowBlockId)))
-               {
-                   // Pending repairs delaying stream advance
-                   PLOG(PL_DEBUG, "NormObject::NextSenderMsg() node>%lu pending repairs delaying stream progress\n", 
-                                    (unsigned long)LocalNodeId());
-                   session.SenderPutFreeBlock(block);
-                   return false; 
-               }
-               else
-               {
-                    // Prune old non-pending block (or even pending if "push" enabled stream)
-                    block_buffer.Remove(lowBlock);
-                    repair_mask.Unset(lowBlockId.GetValue());  // just in case
-                    pending_mask.Unset(lowBlockId.GetValue());
-                    if (IsStream())  // always true
-                        static_cast<NormStreamObject*>(this)->UnlockBlock(lowBlockId);
-                    session.SenderPutFreeBlock(lowBlock);
-                    continue;
-               }
-           }
-           else if (IsStream())
-           {
-                PLOG(PL_WARN, "NormObject::NextSenderMsg() node>%lu Warning! can't repair old stream block\n", 
-                                (unsigned long)LocalNodeId());
-                session.SenderPutFreeBlock(block);
-                repair_mask.Unset(blockId.GetValue());  // just in case
-                pending_mask.Unset(blockId.GetValue());
-                // Unlock (set to non-pending status) the corresponding stream_buffer block
-                static_cast<NormStreamObject*>(this)->UnlockBlock(blockId); 
-                return NextSenderMsg(msg);
-           }
-           else
-           {
-                PLOG(PL_FATAL, "NormObject::NextSenderMsg() invalid non-stream state!\n");
-                ASSERT(0);
-                return false;
-           }
-       }
-    }  // end if (!block)
-    NormSegmentId segmentId = 0;
-    if (!block->GetFirstPending(segmentId)) 
-    {
-        PLOG(PL_ERROR, "NormObject::NextSenderMsg() warning: found pending block with nothing pending!?\n");
-        pending_mask.Unset(blockId.GetValue());
-        return NextSenderMsg(msg);
-    }
-    // Try to read segment 
-    if (segmentId < numData)
-    {
-        // Try to read data segment (Note "ReadSegment" copies in offset/length info also)
-        char* buffer = data->AccessPayload(); 
-        UINT16 payloadLength = ReadSegment(blockId, segmentId, buffer);
-        if (0 == payloadLength)
-        {
-            // (TBD) deal with read error 
-            //(for streams, it currently means the stream is pending, but app hasn't yet written data)
-            if (!IsStream())
-            { 
-                PLOG(PL_FATAL, "NormObject::NextSenderMsg() ReadSegment() error\n"); 
-                return false;
-            }
-            else if (static_cast<NormStreamObject*>(this)->IsOldBlock(blockId))
-            {
-                PLOG(PL_ERROR, "NormObject::NextSenderMsg() node>%lu Warning! can't repair old stream segment\n", 
-                                (unsigned long)LocalNodeId());
-                block->UnsetPending(segmentId); 
-                if (!block->IsPending())
-                {
-                    // End of old block reached
-                    block->ResetParityCount(nparity);
-                    pending_mask.Unset(blockId.GetValue()); 
-                    // for EMCON sending, mark NORM_INFO for re-transmission, if applicable
-                    if (session.SndrEmcon() && HaveInfo())
-                        pending_info = true;
-                }
-                return NextSenderMsg(msg);
-            }
-            else
-            {
-                // App hasn't written data for this block yet
-                return false;
+                if (payloadLength < payloadMax)
+                    memset(buffer+payloadLength, 0, payloadMax-payloadLength);
+                // (TBD) the encode routine could update the block's parity readiness
+                block->UpdateSegSizeMax(payloadLength);
+                session.SenderEncode(segmentId, data->AccessPayload(), block->SegmentList(numData)); 
+                block->IncreaseParityReadiness();     
             }
         }
-        data->SetPayloadLength(payloadLength);
-        
-        // Perform incremental FEC encoding as needed
-        if ((block->ParityReadiness() == segmentId) && (0 != nparity)) 
-           // (TBD) && ((incrementalParity == true) || (auto_parity != 0))
-        {
-            // (TBD) for non-stream objects, catch alternate "last block/segment len"
-            // ZERO pad any "runt" segments before encoding
-            UINT16 payloadMax = segment_size + NormDataMsg::GetStreamPayloadHeaderLength();
+        else
+        {   
+            if (!block->ParityReady(numData)) 
+            {
+                ASSERT(0 == block->ParityReadiness());
+                CalculateBlockParity(block);
+            }
+            char* segment = block->GetSegment(segmentId);
+            ASSERT(NULL != segment);
+            // We only need to send FEC content to cover the biggest segment
+            // sent for the block.
 #ifdef SIMULATE
-            payloadMax = MIN(payloadMax, SIM_PAYLOAD_MAX);
-#endif // SIMULATE
-            if (payloadLength < payloadMax)
-                memset(buffer+payloadLength, 0, payloadMax-payloadLength);
-            // (TBD) the encode routine could update the block's parity readiness
-            block->UpdateSegSizeMax(payloadLength);
-            session.SenderEncode(segmentId, data->AccessPayload(), block->SegmentList(numData)); 
-            block->IncreaseParityReadiness();     
-        }
-    }
-    else
-    {   
-        if (!block->ParityReady(numData)) 
-        {
-            ASSERT(0 == block->ParityReadiness());
-            CalculateBlockParity(block);
-        }
-        char* segment = block->GetSegment(segmentId);
-        ASSERT(NULL != segment);
-        // We only need to send FEC content to cover the biggest segment
-        // sent for the block.
-#ifdef SIMULATE
-        UINT16 payloadMax = MIN(block->GetSegSizeMax(), SIM_PAYLOAD_MAX);
-        data->SetPayload(segment, payloadMax);
-        data->SetPayloadLength(block->GetSegSizeMax());  // correct the msg length
+            UINT16 payloadMax = MIN(block->GetSegSizeMax(), SIM_PAYLOAD_MAX);
+            data->SetPayload(segment, payloadMax);
+            data->SetPayloadLength(block->GetSegSizeMax());  // correct the msg length
 #else
-        data->SetPayload(segment, block->GetSegSizeMax());
+            data->SetPayload(segment, block->GetSegSizeMax());
 #endif // if/else SIMULATE
-    }
+        }
+    }  // end while (NULL == block)
     block->UnsetPending(segmentId); 
     //if (block->InRepair()) 
     //    data->SetFlag(NormObjectMsg::FLAG_REPAIR);
-    
     data->SetFecPayloadId(fec_id, blockId.GetValue(), segmentId, numData, fec_m);
     if (!block->IsPending()) 
     {
@@ -2069,6 +2145,30 @@ bool NormStreamObject::StreamAdvance()
     }
     return false;
 }  // end NormStreamObject::StreamAdvance()
+
+NormBlockId NormStreamObject::RepairWindowLo() const
+{
+    NormBlockId blockId(0);
+    if (!stream_buffer.IsEmpty())
+        blockId = StreamBufferLo();
+    if (!block_buffer.IsEmpty())
+    {
+        NormBlockId rangeMin = block_buffer.RangeMin();
+        if (Compare(rangeMin, blockId) > 0)
+            blockId = rangeMin;
+    }
+    return blockId;
+    
+    /*
+    // TBD - use block_buffer.range_hi information to compute
+    // (i.e. range_hi - range_max
+    while (!block_buffer.CanInsert(blockId))
+    {
+        Increment(blockId);
+    }
+    return blockId;
+    */
+}  // end NormStreamObject::RepairWindowLo()
 
 bool NormObject::CalculateBlockParity(NormBlock* block)
 {
@@ -2753,14 +2853,11 @@ bool NormStreamObject::Open(UINT32      bufferSize,
     // since our objects are exclusively read _or_ write
     read_init = true;
     
-    read_index.block = read_index.segment = 0; 
+    read_index.block = read_index.segment = read_index.offset = 0; 
     write_index.block = write_index.segment = 0;
     tx_index.block = tx_index.segment = 0;
     tx_offset = write_offset = read_offset = 0;    
     write_vacancy = true;
-    
-    
-    
     stream_sync = false;
     flush_pending = false;
     msg_start = true;
@@ -2938,7 +3035,8 @@ bool NormStreamObject::StreamUpdateStatus(NormBlockId blockId)
                 // This is a fresh rx stream, so init the read indices
                 read_init = false;
                 read_index.block = blockId;  // for initial SYNC_STREAM sync, this will be zero (stream beginning)
-                read_index.segment = 0;   
+                read_index.segment = 0;  
+                read_index.offset = 0; 
                 read_offset = 0;
             }
         }
@@ -3089,27 +3187,29 @@ bool NormStreamObject::WriteSegment(NormBlockId   blockId,
         read_init = false;
         read_index.block = blockId;
         read_index.segment = segmentId;   
+        read_index.offset = 0;
         read_offset = segmentOffset;
         read_ready = true;
     } 
         
     //if ((blockId < read_index.block) ||
     if ((Compare(blockId, read_index.block) < 0) ||
-        ((blockId == read_index.block) &&
-         (segmentId < read_index.segment))) 
+        ((blockId == read_index.block) && (segmentId < read_index.segment))) 
     {
         PLOG(PL_DEBUG, "NormStreamObject::WriteSegment() block/segment < read_index!?\n");
         return false;
     }      
     
+    /*
     // if (segmentOffset < read_offset)
     UINT32 diff = segmentOffset - read_offset;
     if ((diff > 0x80000000) || ((0x80000000 == diff) && (segmentOffset > read_offset)))
     {
-        PLOG(PL_ERROR, "NormStreamObject::WriteSegment() diff:%lu segmentOffset:%lu < read_offset:%lu \n",
+        PLOG(PL_DEBUG, "NormStreamObject::WriteSegment() diff:%lu segmentOffset:%lu < read_offset:%lu \n",
                         (unsigned long)diff, (unsigned long)segmentOffset, (unsigned long)read_offset);
         return false;
     }
+    */
     
     NormBlock* block = stream_buffer.Find(blockId);
     if (!block)
@@ -3128,12 +3228,26 @@ bool NormStreamObject::WriteSegment(NormBlockId   blockId,
             }
             while (block->IsPending())
             {
-                broken = true;
                 // Force read_index forward, giving app a chance to read data
-                read_index.block = block->GetId();
-                block->GetFirstPending(read_index.segment);
+                NormSegmentId firstPending;
+                block->GetFirstPending(firstPending);
+                if (read_index.block != block->GetId())
+                {
+                    read_index.block = block->GetId();
+                    read_index.segment = firstPending;
+                    read_index.offset = 0;
+                    broken = true;
+                    stream_broken = true;
+                }
+                if (read_index.segment != firstPending)
+                {
+                    read_index.segment = firstPending;
+                    read_index.offset = 0;
+                    broken = true;
+                    stream_broken = true;
+                }
                 NormBlock* tempBlock = block;
-                UINT32 tempOffset = read_offset;
+                //UINT32 tempOffset = read_offset;
                 NormStreamObject::Index tempIndex = read_index;
                 // (TBD) uncomment the code so that only a single
                 // UPDATED notification is posted???
@@ -3145,13 +3259,16 @@ bool NormStreamObject::WriteSegment(NormBlockId   blockId,
                 block = stream_buffer.Find(stream_buffer.RangeLo());
                 if (tempBlock == block)
                 {
-                    if ((tempOffset == read_offset) && 
+                    if (//(tempOffset == read_offset) && 
                         (tempIndex.block == read_index.block) && 
-                        (tempIndex.segment == read_index.segment))
+                        (tempIndex.segment == read_index.segment) &&
+                        (tempIndex.offset == read_index.offset))
                     {
-                        // App didn't want any data here, purge segment
+                        // App didn't grab data here, purge segment
                         dataLost = true;
+                        stream_broken = true;
                         block->UnsetPending(read_index.segment++);
+                        read_index.offset = 0;
                         if (read_index.segment >= ndata)
                         {
                             Increment(read_index.block);
@@ -3179,6 +3296,7 @@ bool NormStreamObject::WriteSegment(NormBlockId   blockId,
                 {
                     Increment(read_index.block);
                     read_index.segment = 0;
+                    read_index.offset = 0;
                     //TRACE("Prune(%u) 7 ...\n", (UINT32)read_index.block);
                     Prune(read_index.block, false);   
                 }
@@ -3331,8 +3449,7 @@ bool NormStreamObject::PassiveReadCheck(NormBlockId blockId, NormSegmentId segme
         TRACE("    (read_index>%lu:%hu  check>%lu:%hu usage:%u)\n", 
                    (unsigned long)read_index.block.GetValue(), (UINT16)read_index.segment, 
                    (unsigned long)blockId.GetValue(), (UINT16)segmentId, GetCurrentBufferUsage());
-    }
-    */
+    }*/
     return result;
 }  // end NormStreamObject::PassiveReadCheck()
 
@@ -3353,10 +3470,19 @@ bool NormStreamObject::Read(char* buffer, unsigned int* buflen, bool seekMsgStar
         stream_broken = false;
         return false;
     }
-    unsigned int bytesWanted = *buflen;
+    unsigned int bytesWanted;
+    if (NULL == buflen)
+    {
+        bytesWanted = 0;
+        buflen = &bytesWanted;
+    }
+    else
+    {
+        bytesWanted = *buflen;
+    }
     bool result = ReadPrivate(buffer, buflen, seekMsgStart);
     if (!read_ready) notify_on_update = true;
-    if (!seekMsgStart && result && (NULL != buflen) && (0 != *buflen) && (*buflen < bytesWanted))
+    if (!seekMsgStart && result && (0 != *buflen) && (*buflen < bytesWanted))
     {
         char dummyBuffer[8];
         unsigned int dummyCount = 8;
@@ -3381,6 +3507,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
     Retain();
     unsigned int bytesRead = 0;
     unsigned int bytesToRead = *buflen;
+    bool brokenStream = false;
     do
     {
         NormBlock* block = stream_buffer.Find(read_index.block);
@@ -3427,14 +3554,16 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 {
                     Increment(read_index.block);  
                     read_index.segment = 0; 
+                    read_index.offset = 0;
                     //TRACE("Prune(%u) 1 ...\n", (UINT32)read_index.block);
+                    if (!seekMsgStart) brokenStream = true;
                     Prune(read_index.block, false);
                     continue;
                 }
                 else
                 {
                     Release();
-                    return seekMsgStart ? false : true;   
+                    return (seekMsgStart || brokenStream) ? false : true;   
                 }
             }
         }
@@ -3464,7 +3593,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 }
                 else if (session.RcvrIsLowDelay())
                 {
-                    // Has the sender moved forward to the next FEC blocks
+                    // Has the sender moved forward to the next FEC block
                     if (Compare(max_pending_block, read_index.block) >= 0)
                     {
                         INT32 delta = (UINT32)Difference(max_pending_block, read_index.block);
@@ -3484,7 +3613,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 }
                 if (forceForward)
                 {
-                    // Force read_index forward and try again.
+                    // Force read_index forward and try again if seeking msg start
                     if (++read_index.segment >= ndata)
                     {
                         stream_buffer.Remove(block);
@@ -3492,20 +3621,30 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                         block_pool.Put(block);
                         Increment(read_index.block);
                         read_index.segment = 0;
+                        read_index.offset = 0;
                         //TRACE("Prune(%u) 2 ...\n", (UINT32)read_index.block);
                         Prune(read_index.block, false); // prevents repair requests for data we 
-                    }                                   // no longer care about
-                    continue;
+                    }                                   // no longer care about (i.e, prior to this block)
+                    if (!seekMsgStart) brokenStream = true;
+                    continue;  // attempt to find next valid read_index beyond break
                 }
                 else
                 {
                     Release();
-                    return seekMsgStart ? false : true;   
+                    return (seekMsgStart || brokenStream) ? false : true;   
                 } 
             } 
         }  // end if (NULL = segment)
         ASSERT(NULL != segment);
         read_ready = true;
+        if (brokenStream) 
+        {
+            // We have found the next valid read_index and block/segment but
+            // stream continuity was broken so report by returning false
+            Release();
+            return false;
+        }
+        
         UINT16 length = NormDataMsg::ReadStreamPayloadLength(segment);
         if (0 == length)
         {
@@ -3525,6 +3664,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                         block_pool.Put(block);
                         Increment(read_index.block);
                         read_index.segment = 0;
+                        read_index.offset = 0;
                         //Prune(read_index.block, false);
                     }
                     continue;
@@ -3555,6 +3695,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                     block_pool.Put(block);
                     Increment(read_index.block);
                     read_index.segment = 0;
+                    read_index.offset = 0;
                     //TRACE("Prune(%u) 3 ...\n", (UINT32)read_index.block);
                     Prune(read_index.block, false);
                 }
@@ -3563,8 +3704,10 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 return false;
             }
         }
+        
         UINT32 segmentOffset = NormDataMsg::ReadStreamPayloadOffset(segment);
-        // if (read_offset < segmentOffset)
+        
+        /*// if (read_offset < segmentOffset)
         UINT32 diff = read_offset - segmentOffset;
         if ((diff > 0x80000000) || ((0x80000000 == diff) && (read_offset > segmentOffset)))
         {
@@ -3587,11 +3730,10 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 Release();
                 return false;
             }
-        }
+        }*/
+        //UINT32 index = read_offset - segmentOffset;
         
-        UINT32 index = read_offset - segmentOffset;
-        
-	    if ((length > 0) && (index >= length))
+	    if ((length > 0) && (read_index.offset >= length))
         {
             read_ready = false; //DetermineReadReadiness();
             if (bytesRead > 0)
@@ -3604,12 +3746,12 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
             else
             {
                 PLOG(PL_ERROR, "NormStreamObject::ReadPrivate() node>%lu obj>%hu blk>%lu seg>%hu mangled stream! "
-                                "index:%hu length:%hu read_offset:%lu segmentOffset:%lu\n",
-                                (unsigned long)LocalNodeId(), (UINT16)transport_id, 
+                               "offset:%hu length:%hu read_offset:%lu segmentOffset:%lu\n",
                                 (unsigned long)read_index.block.GetValue(), (UINT16)read_index.segment, 
-                                index, length, (unsigned long)read_offset, (unsigned long)segmentOffset);
+                                read_index.offset, length, (unsigned long)read_offset, (unsigned long)segmentOffset);
                 // Reset our read_offset ...
                 read_offset = segmentOffset;
+                read_index.offset = 0;
                 *buflen = 0;
                 Release();
                 return false;
@@ -3634,6 +3776,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
                 //block->DetachSegment(read_index.segment);
                 //segment_pool.Put(segment);
                 block->UnsetPending(read_index.segment++);
+                read_index.offset = 0;
                 if (read_index.segment >= ndata) 
                 {
                     stream_buffer.Remove(block);
@@ -3649,25 +3792,25 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
             else
             {
                 read_offset += (msgStart - 1);
-                index += (msgStart - 1); 
+                read_index.offset = (msgStart - 1);
                 seekMsgStart = false; 
             }            
         }
-        UINT16 count = length - index;
+        UINT16 count = length - read_index.offset;
         count = MIN(count, bytesToRead);
 #ifdef SIMULATE
-        UINT16 simCount = index + count + NormDataMsg::GetStreamPayloadHeaderLength();
+        UINT16 simCount = read_index.offset + count + NormDataMsg::GetStreamPayloadHeaderLength();
         simCount = (simCount < SIM_PAYLOAD_MAX) ? (SIM_PAYLOAD_MAX - simCount) : 0;
-        memcpy(buffer+bytesRead, segment+index+NormDataMsg::GetStreamPayloadHeaderLength(), simCount);
+        memcpy(buffer+bytesRead, segment+read_index.offset+NormDataMsg::GetStreamPayloadHeaderLength(), simCount);
 #else
-        memcpy(buffer+bytesRead, segment+index+NormDataMsg::GetStreamPayloadHeaderLength(), count);
+        memcpy(buffer+bytesRead, segment+read_index.offset+NormDataMsg::GetStreamPayloadHeaderLength(), count);
 #endif // if/else SIMULATE
         
-        index += count;
+        read_index.offset += count;
         bytesRead += count;
         read_offset += count;
         bytesToRead -= count;
-        if (index >= length)
+        if (read_index.offset >= length)
         {            
             bool streamEnded = (0 == NormDataMsg::ReadStreamPayloadLength(segment));
             // NormDataMsg::StreamPayloadFlagIsSet(segment, NormDataMsg::FLAG_STREAM_END);
@@ -3676,6 +3819,7 @@ bool NormStreamObject::ReadPrivate(char* buffer, unsigned int* buflen, bool seek
             // block->DetachSegment(read_index.segment);
             // segment_pool.Put(segment);
             block->UnsetPending(read_index.segment++);
+            read_index.offset = 0;
             if (read_index.segment >= ndata) 
             {
                 stream_buffer.Remove(block);

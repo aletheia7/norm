@@ -503,7 +503,8 @@ class NormSession
         void DeleteRemoteSender(NormSenderNode& senderNode);
         
         // Call this to do remote sender memory allocations ahead of time
-        bool PreallocateRemoteSender(UINT16         segmentSize, 
+        bool PreallocateRemoteSender(unsigned int   bufferSize,
+                                     UINT16         segmentSize, 
                                      UINT16         numData, 
                                      UINT16         numParity, 
                                      unsigned int   streamBufferSize = 0);
@@ -583,7 +584,8 @@ class NormSession
 #endif // SIMULATE
         
         void SetProbeCount(unsigned probeCount) {probe_count = probeCount;}
-                    
+        bool SenderQueueSquelch(NormObjectId objectId);
+                   
     private:
         // Only NormSessionMgr can create/delete sessions
         NormSession(NormSessionMgr& sessionMgr, NormNodeId localNodeId);
@@ -630,7 +632,7 @@ class NormSession
                                     UINT16         ccSequence);         
         void AdjustRate(bool onResponse);
         void SetTxRateInternal(double txRate);  // here, txRate is bytes/sec
-        bool SenderQueueSquelch(NormObjectId objectId);
+        //bool SenderQueueSquelch(NormObjectId objectId);
         void SenderQueueFlush();
         bool SenderQueueWatermarkFlush();
         bool SenderBuildRepairAdv(NormCmdRepairAdvMsg& cmd);

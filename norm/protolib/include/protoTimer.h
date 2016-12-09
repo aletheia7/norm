@@ -93,8 +93,10 @@ class ProtoTimer
          *
          * @param theInterval timer interval in seconds
          */ 
+        // Our ProtoTime class currently only handles 1 usec granularity (for non-zero timeouts)
+        // so we enforce that constraint here.
         void SetInterval(double theInterval) 
-            {interval = (theInterval < 0.0) ? 0.0 : theInterval;}
+            {interval = (theInterval < 0.0) ? 0.0 : ((theInterval < 1.0e-06) ? 1.0e-06 : theInterval);}
         double GetInterval() const {return interval;}
 		/**
         * Timer repetition (0 =  one shot, -1 = infinite repetition)

@@ -350,6 +350,7 @@ class NormBlockBuffer
         
         NormBlockId RangeLo() const {return range_lo;}
         NormBlockId RangeHi() const {return range_hi;}
+        NormBlockId RangeMin() const;
         bool IsEmpty() const {return (0 == range);}
         bool CanInsert(NormBlockId blockId) const;
 

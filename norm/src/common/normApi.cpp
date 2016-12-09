@@ -2300,6 +2300,7 @@ void NormNodeSetRxRobustFactor(NormNodeHandle   nodeHandle,
 
 NORM_API_LINKAGE
 bool NormPreallocateRemoteSender(NormSessionHandle  sessionHandle,
+                                 unsigned long      bufferSize,
                                  UINT16             segmentSize, 
                                  UINT16             numData, 
                                  UINT16             numParity,
@@ -2310,7 +2311,7 @@ bool NormPreallocateRemoteSender(NormSessionHandle  sessionHandle,
     if (instance && instance->dispatcher.SuspendThread())
     {
         NormSession* session = (NormSession*)sessionHandle;
-        result = session->PreallocateRemoteSender(segmentSize, numData, numParity, streamBufferSize);
+        result = session->PreallocateRemoteSender(bufferSize, segmentSize, numData, numParity, streamBufferSize);
         instance->dispatcher.ResumeThread();
     }
     return result;

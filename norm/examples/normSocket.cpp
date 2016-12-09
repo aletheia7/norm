@@ -926,11 +926,12 @@ NormSocketHandle NormListen(NormInstanceHandle instance, UINT16 serverPort, cons
 }  // end NormListen()
 
 
-NormSocketHandle NormAccept(NormSocketHandle serverSocket, NormNodeHandle client)
+NormSocketHandle NormAccept(NormSocketHandle serverSocket, NormNodeHandle client, NormInstanceHandle instance)
 {
+    // TBD - if another instance handle is provided use that instead
     // TBD - VALIDATE PARAMETERS AND ERROR CHECK ALL THE API CALLS MADE HERE !!!!!
     NormSocket* s = (NormSocket*)serverSocket;
-    return (NormSocketHandle)(s->Accept(client));
+    return (NormSocketHandle)(s->Accept(client, instance));
 }  // end NormAccept()
  
 

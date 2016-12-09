@@ -112,7 +112,6 @@ ProtoSocket::~ProtoSocket()
     }
 }
 
-
 bool ProtoSocket::SetBlocking(bool blocking)
 {
 #ifdef UNIX
@@ -156,7 +155,7 @@ bool ProtoSocket::SetNotifier(ProtoSocket::Notifier* theNotifier)
             else
             {
                 // Set socket to "non-blocking"
-	      if(!SetBlocking(false))
+	            if(!SetBlocking(false))
                 {
                     PLOG(PL_ERROR, "ProtoSocket::SetNotifier() SetBlocking(false) error\n", GetErrorString());
                     return false;
@@ -1399,12 +1398,13 @@ bool ProtoSocket::SendTo(const char*         buffer,
         {
 
 	        PLOG(PL_DEBUG, "ProtoSocket::SendTo() error: Send() error\n");
+            buflen = 0;
             return false;
         }
         else if (numBytes != buflen)
         {
-            numBytes = 0;
             PLOG(PL_DEBUG, "ProtoSocket::SendTo() error: Send() incomplete\n");
+            buflen = 0;
             return true;
         }
         else
@@ -1431,8 +1431,7 @@ bool ProtoSocket::SendTo(const char*         buffer,
         if (SOCKET_ERROR == WSASendTo(handle, &wsaBuf, 1, &numBytes, 0, 
                                       &dstAddr.GetSockAddr(), addrSize, NULL, NULL))
         {
-            
-            
+            buflen = 0;
             switch (WSAGetLastError())
             {
                 case WSAEINTR:
@@ -1455,6 +1454,7 @@ bool ProtoSocket::SendTo(const char*         buffer,
         ssize_t result = sendto(handle, buffer, (size_t)buflen, 0, &dstAddr.GetSockAddr(), addrSize);	
         if (result < 0)
         {
+            buflen = 0;
             switch (errno)
             {
                 case EINTR:

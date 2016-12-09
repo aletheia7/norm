@@ -348,7 +348,13 @@ class NormSenderNode : public NormNode
         UINT16 GetInstanceId() {return instance_id;}
         bool IsOpen() const {return is_open;} 
         void Close();
-        bool AllocateBuffers(UINT8 fecId, UINT16 fecInstanceId, UINT8 fecM, UINT16 segmentSize, UINT16 numData, UINT16 numParity);
+        bool AllocateBuffers(unsigned int   bufferSpace,
+                             UINT8          fecId, 
+                             UINT16         fecInstanceId, 
+                             UINT8          fecM, 
+                             UINT16         segmentSize,
+                             UINT16         numData, 
+                             UINT16         numParity);
         bool BuffersAllocated() {return (0 != segment_size);}
         void FreeBuffers();
         void Activate(bool isObjectMsg);

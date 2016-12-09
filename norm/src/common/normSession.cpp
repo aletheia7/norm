@@ -974,7 +974,8 @@ void NormSession::DeleteRemoteSender(NormSenderNode& senderNode)
     senderNode.Release();
 }  // end NormSession::DeleteRemoteSender()
 
-bool NormSession::PreallocateRemoteSender(UINT16        segmentSize, 
+bool NormSession::PreallocateRemoteSender(unsigned int  bufferSpace,
+                                          UINT16        segmentSize, 
                                           UINT16        numData, 
                                           UINT16        numParity,
                                           unsigned int  streamBufferSize)
@@ -1000,7 +1001,7 @@ bool NormSession::PreallocateRemoteSender(UINT16        segmentSize,
     {
         fecId = 5;
     }
-    if (!preset_sender->AllocateBuffers(fecId, 0, fecM, segmentSize, numData, numParity))
+    if (!preset_sender->AllocateBuffers(bufferSpace, fecId, 0, fecM, segmentSize, numData, numParity))
     {
         PLOG(PL_ERROR, "NormSession::PreallocateRemoteSender() error: buffer allocation failure!\n");
         delete preset_sender;
@@ -3643,7 +3644,14 @@ void NormSession::SenderHandleNackMessage(const struct timeval& currentTime, Nor
                                 tx_repair_block_min = nextBlockId;
                                 tx_repair_segment_min = 0;
                             }
-                            object->HandleBlockRequest(nextBlockId, lastBlockId);
+                            if (!object->HandleBlockRequest(nextBlockId, lastBlockId))
+                            {
+                                if (!squelchQueued) 
+                                {
+                                    SenderQueueSquelch(nextObjectId);
+                                    squelchQueued = true;
+                                }
+                            }
                             startTimer = true;
                         }
                         break;
@@ -3750,7 +3758,7 @@ void NormSession::SenderHandleNackMessage(const struct timeval& currentTime, Nor
                                     {
                                         attemptLock = false;  // NACK arrived too late   
                                     }
-                                }
+                                }  // end if (holdoff)
                                 if (attemptLock)
                                 {
                                     if (!((NormStreamObject*)object)->LockSegments(nextBlockId, firstLockId, lastLockId))
@@ -3814,7 +3822,7 @@ void NormSession::SenderHandleNackMessage(const struct timeval& currentTime, Nor
                                 }
                             }
                         }
-                        else
+                        else  // !holdoff
                         {
                             // Update our minimum tx repair index as needed
                             ASSERT(nextBlockId == block->GetId());
@@ -3968,7 +3976,8 @@ bool NormSession::SenderQueueSquelch(NormObjectId objectId)
         {
             ASSERT(NormObject::STREAM == obj->GetType());
             squelch->SetObjectId(objectId);
-            NormBlockId blockId = static_cast<NormStreamObject*>(obj)->StreamBufferLo();
+            //NormBlockId blockId = static_cast<NormStreamObject*>(obj)->StreamBufferLo();
+            NormBlockId blockId = static_cast<NormStreamObject*>(obj)->RepairWindowLo();
             squelch->SetFecPayloadId(fec_id, blockId.GetValue(), 0, obj->GetBlockSize(blockId), fec_m);
             while ((obj = iterator.GetNextObject()))
                 if (objectId == obj->GetId()) break;
@@ -3982,7 +3991,8 @@ bool NormSession::SenderQueueSquelch(NormObjectId objectId)
                squelch->SetObjectId(obj->GetId());
                NormBlockId blockId;
                if (obj->IsStream())
-                   blockId =static_cast<NormStreamObject*>(obj)->StreamBufferLo();
+                   //blockId =static_cast<NormStreamObject*>(obj)->StreamBufferLo();
+                   blockId =static_cast<NormStreamObject*>(obj)->RepairWindowLo();
                else
                    blockId = NormBlockId(0);
                squelch->SetFecPayloadId(fec_id, blockId.GetValue(), 0, obj->GetBlockSize(blockId), fec_m);
@@ -4310,7 +4320,7 @@ bool NormSession::OnRepairTimeout(ProtoTimer& /*theTimer*/)
                 PLOG(PL_TRACE, "NormSession::OnRepairTimeout() node>%lu tx reset obj>%hu ...\n",
                                (unsigned long)LocalNodeId(), (UINT16)objectId);
                 if (obj->IsStream())
-                    obj->TxReset(((NormStreamObject*)obj)->StreamBufferLo());
+                    obj->TxReset(((NormStreamObject*)obj)->RepairWindowLo());
                 else
                     obj->TxReset();
                 tx_repair_mask.Unset(objectId);
@@ -4403,7 +4413,7 @@ bool NormSession::OnTxTimeout(ProtoTimer& /*theTimer*/)
     
     suppress_rate = -1.0;  // reset cc feedback suppression rate
     
-    if (msg)
+    if (NULL != msg)
     {
         switch (SendMessage(*msg))
         {
@@ -4428,12 +4438,14 @@ bool NormSession::OnTxTimeout(ProtoTimer& /*theTimer*/)
                     message_queue.Prepend(msg); 
                 if (tx_timer.IsActive())
                     tx_timer.Deactivate();
+                //TRACE("starting output notification ...\n");
                 tx_socket->StartOutputNotification();  
                 return false;  // since timer was deactivated
                     
             case MSG_SEND_FAILED:
                 // Message was not sent due to socket error (no route, etc), so so just timeout and try again
                 // (TBD - is there something smarter we should do)
+                //TRACE("MSG_SEND_FAILED\n");
                 if (!advertise_repairs) message_queue.Prepend(msg); 
                 if (tx_rate > 0.0)
                     tx_timer.SetInterval(GetTxInterval(msg->GetLength(), tx_rate));
@@ -4601,7 +4613,7 @@ NormSession::MessageStatus NormSession::SendMessage(NormMsg& msg)
             }
             else
             {
-                PLOG(PL_ERROR, "NormSession::SendMessage() sendto(%s/%hu) error: %s\n",
+                PLOG(PL_WARN, "NormSession::SendMessage() sendto(%s/%hu) warning: %s\n",
                         msg.GetDestination().GetHostString(), msg.GetDestination().GetPort(), GetErrorString());
                 return MSG_SEND_FAILED;
             }
@@ -5169,8 +5181,8 @@ bool NormSession::OnReportTimeout(ProtoTimer& /*theTimer*/)
         NormSenderNode* next;
         while ((next = (NormSenderNode*)iterator.GetNextNode()))
         {
-            PLOG(reportDebugLevel, "Remote sender>%lu grtt>%lf sec\n", (unsigned long)next->GetId(), 
-                                    next->GetGrttEstimate());
+            PLOG(reportDebugLevel, "Remote sender>%lu grtt>%lf sec loss>%lf\n", (unsigned long)next->GetId(), 
+                                    next->GetGrttEstimate(), next->LossEstimate());
             // TBD - Output sender congestion control status if cc is enabled
             double rxRate = 8.0e-03*next->GetRecvRate(report_timer.GetInterval()); // kbps
             double rxGoodput = 8.0e-03*next->GetRecvGoodput(report_timer.GetInterval()); // kbps

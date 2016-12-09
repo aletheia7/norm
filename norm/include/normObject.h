@@ -222,16 +222,7 @@ class NormObject
         bool TxUpdateBlock(NormBlock*       theBlock, 
                            NormSegmentId    firstSegmentId, 
                            NormSegmentId    lastSegmentId,
-                           UINT16           numErasures)
-        {
-            NormBlockId blockId = theBlock->GetId();
-            bool result = theBlock->TxUpdate(firstSegmentId, lastSegmentId, 
-                                             GetBlockSize(blockId), nparity, 
-                                             numErasures);
-            ASSERT(result ? pending_mask.Set(blockId.GetValue()) : true);
-            result = result ? pending_mask.Set(blockId.GetValue()) : false;
-            return result; 
-        }  
+                           UINT16           numErasures);
         bool HandleInfoRequest(bool holdoff);
         bool HandleBlockRequest(const NormBlockId& nextId, const NormBlockId& lastId);
         NormBlock* FindBlock(NormBlockId blockId) {return block_buffer.Find(blockId);}
@@ -529,6 +520,7 @@ class NormStreamObject : public NormObject
         
         bool LockSegments(NormBlockId blockId, NormSegmentId firstId, NormSegmentId lastId);
         NormBlockId StreamBufferLo() const {return stream_buffer.RangeLo();} 
+        NormBlockId RepairWindowLo() const;
         void Prune(NormBlockId blockId, bool updateStatus);
         
         bool IsFlushPending() {return flush_pending;}
@@ -578,6 +570,7 @@ class NormStreamObject : public NormObject
             public:
                 NormBlockId     block;
                 NormSegmentId   segment; 
+                UINT16          offset;
         };
         // Extra state for STREAM objects
         bool                        stream_sync;

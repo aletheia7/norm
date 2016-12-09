@@ -845,7 +845,6 @@ bool ProtoSlidingMask::SetBits(UINT32 index, UINT32 count)
         else
         {
             INT32 deltaPos = start + Difference(last, offset);
-            deltaPos += start;
             if (deltaPos < 0) deltaPos += num_bits;
             // The "CanSet()" checks above guarantee positive "deltaPos" here
             lastPos = (UINT32)deltaPos;

@@ -154,6 +154,7 @@ const double ProtoTimerMgr::PRECISION_TIME_THRESHOLD = 8.0;
 */
 void ProtoTimerMgr::OnSystemTimeout()
 {
+    //TRACE("enter OnSystemTimeout() short_head interval:%lf ...\n", short_head ? short_head->GetInterval() : -1.0);
     timeout_scheduled = false;
     bool updateStatus = update_pending;
     update_pending = true;
@@ -163,6 +164,7 @@ void ProtoTimerMgr::OnSystemTimeout()
     while (next)
     {
         double delta = ProtoTime::Delta(next->timeout, now);
+        //TRACE("  delta = %lf\n", delta);
         // We limit to within a microsecond of accuracy on 
         // real-world systems to avoid overzealous attempts
         // at scheduling
@@ -255,15 +257,17 @@ void ProtoTimerMgr::ActivateTimer(ProtoTimer& theTimer)
 
 void ProtoTimerMgr::ReactivateTimer(ProtoTimer& theTimer, const ProtoTime& now)
 {
-    double timerInterval = theTimer.interval;
+    double timerInterval = theTimer.GetInterval();
     if (PRECISION_TIME_THRESHOLD > timerInterval)
     {
+        //TRACE("incrementing timer timeout %lu:%lu by %lf\n", theTimer.timeout.sec(), theTimer.timeout.usec(), timerInterval);
         theTimer.timeout += timerInterval;
+        //TRACE("   new timeout %lu:%lu\n",  theTimer.timeout.sec(), theTimer.timeout.usec());
         double delta = ProtoTime::Delta(theTimer.timeout, now);
-        if (delta < -1.0)
+        if (delta < -0.01 )
         {
             GetCurrentProtoTime(theTimer.timeout);
-            PLOG(PL_ERROR, "ProtoTimerMgr: Warning! real time failure interval:%lf (delta:%lf)\n", 
+            PLOG(PL_DEBUG, "ProtoTimerMgr: Warning! real time failure interval:%lf (delta:%lf)\n", 
                            timerInterval, delta);
         }   
         InsertShortTimer(theTimer);

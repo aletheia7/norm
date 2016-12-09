@@ -308,7 +308,7 @@ bool ProtoExample::OnStartup(int argc, const char*const* argv)
                 entry->GetMetric());
     }
     //ProtoAddress dst;
-    //dst.ResolveFromString("132.250.93.34");
+    //dst.ResolveFromString("10.1.2.3");
     //ProtoAddress gw;
     //routeMgr->SetRoute(dst, 32, gw, 4, 0);
     routeMgr->Close();

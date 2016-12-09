@@ -61,7 +61,7 @@ NormSocketHandle NormListen(NormInstanceHandle instance, UINT16 serverPort, cons
 
 NormSocketHandle NormConnect(NormInstanceHandle instance, 
                              const char*        serverAddr, 
-                              UINT16            serverPort, 
+                             UINT16             serverPort, 
                              const char*        groupAddr = NULL, 
                              NormNodeId         clientId = NORM_NODE_NONE);
 

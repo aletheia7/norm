@@ -142,7 +142,15 @@ class NormStreamer
             {NormSetTxLoss(norm_session, txloss);}
         // Set the scheduler for running the app and norm threads.
         static bool BoostPriority();
-            
+    	// Check that sequence numbers increase by one each time.
+    	// Assumes that sequence number is 8-byte network-order first 8 bytes of buffer.
+    	bool checkSequenceNumber(const char * buffer) ;
+    	void SetCheckSequence(bool checkSeq)
+    	{
+    		m_check_sequence_number_enabled = checkSeq ;
+    	}
+
+
     private:
         NormSessionHandle   norm_session;
         bool                is_multicast;
@@ -190,7 +198,8 @@ class NormStreamer
         //double              tx_loss;
         unsigned long       input_byte_count;
         unsigned long       tx_byte_count;
-            
+        bool                m_check_sequence_number_enabled ;
+        uint64_t            m_sequence ;
 };  // end class NormStreamer
 
 NormStreamer::NormStreamer()
@@ -203,7 +212,9 @@ NormStreamer::NormStreamer()
    rx_stream(NORM_OBJECT_INVALID), rx_ready(false), rx_needed(false), msg_sync(false),
    output_socket(ProtoSocket::UDP), output_file(stdout), output_fd(fileno(stdout)), output_ready(true), 
    output_msg_length(0), output_index(0), 
-   omit_header(false), input_byte_count(0), tx_byte_count(0)
+   omit_header(false), input_byte_count(0), tx_byte_count(0),
+   m_check_sequence_number_enabled(false), m_sequence(0)
+
 {
 }
 
@@ -242,6 +253,64 @@ bool NormStreamer::BoostPriority()
     return true;
 }
 
+#ifndef ntohll
+//Convert net-order to host-order.
+uint64_t ntohll(uint64_t value)
+{
+	static const int betest = 1 ;
+	union MyUnion
+	{
+		uint64_t i64;
+		uint32_t i32[2];
+	};
+
+	uint64_t rval = value;
+	bool host_is_little_endian =  ( 1 == (int)(*(char*)&betest) ) ;
+	if ( host_is_little_endian )
+	{
+
+		MyUnion u;
+		u.i64 = value;
+		uint32_t temp = u.i32[0];
+		u.i32[0] = ntohl(u.i32[1]);
+		u.i32[1] = ntohl(temp);
+		rval = u.i64;
+	}
+	return rval ;
+}
+#endif // !nothll
+
+bool NormStreamer::checkSequenceNumber(const char * buffer)
+{
+	bool rval = true ;
+	uint64_t temp = 0 ;
+	memcpy((void*)&temp, (void*)buffer, sizeof(temp));
+	uint64_t seq = ntohll(temp);
+	uint64_t delta_sequence = 0 ;
+	if ( seq > m_sequence )
+	{
+		delta_sequence = seq - m_sequence ;
+	}
+	else
+	{
+		delta_sequence = m_sequence - seq ;
+	}
+	if ( delta_sequence != 1 )
+	{
+		// Dont count the packets dropped before the first read.
+		if ( m_check_sequence_number_enabled && ( 0 != m_sequence ) )
+		{
+			fprintf(stderr,"%s:=>dropped %llu packets m_sequence: %llu seq:%llu\n",
+					__PRETTY_FUNCTION__,
+					delta_sequence, m_sequence, seq);
+		}
+		rval = false;
+	}
+	m_sequence = seq;
+	return rval ;
+}
+
+
 bool NormStreamer::EnableUdpRelay(const char* relayAddr, unsigned short relayPort)
 {
     if (!output_socket.Open())
@@ -265,7 +334,7 @@ bool NormStreamer::EnableUdpListener(unsigned short listenPort, const char* grou
 	bool rval = true ;
     if (!input_socket.Open(listenPort))
     {
-        fprintf(stderr, "normStreamer input_socket open() error: %s\n", GetErrorString());
+        fprintf(stderr, "normStreamer input_socket open() error: %s on port %u\n", GetErrorString(), listenPort);
 		rval = false ;
     }
 	else 
@@ -325,7 +394,7 @@ bool NormStreamer::OpenNormSession(NormInstanceHandle instance, const char* addr
     }
     
     // Set some default parameters (maybe we should put parameter setting in Start())
-    //NormSetDefaultSyncPolicy(norm_session, NORM_SYNC_STREAM);
+    NormSetDefaultSyncPolicy(norm_session, NORM_SYNC_STREAM);
     
     //NormSetDefaultUnicastNack(norm_session, true);
     
@@ -374,22 +443,20 @@ bool NormStreamer::Start(bool sender, bool receiver)
     unsigned int numParity = 0;
     unsigned int txSockBufferSize = 4*1024*1024;
     unsigned int rxSockBufferSize = 6*1024*1024;
-        
     if (receiver)
     {
+        NormPreallocateRemoteSender(norm_session, bufferSize, segmentSize, blockSize, numParity, bufferSize);
+        fprintf(stderr, "normStreamer: receiver ready.\n");
         if (!NormStartReceiver(norm_session, bufferSize))
         {
             fprintf(stderr, "normStreamer error: unable to start NORM receiver\n");
             return false;
         }
-        // Note: NormPreallocateRemoteSender() MUST be called AFTER NormStartReceiver()
-        NormPreallocateRemoteSender(norm_session, segmentSize, blockSize, numParity, bufferSize);
         if (0 != mlockall(MCL_CURRENT | MCL_FUTURE))
 		    fprintf(stderr, "normStreamer error: failed to lock memory for receiver.\n");
         NormSetRxSocketBuffer(norm_session, rxSockBufferSize);
         rx_needed = true;
         rx_ready = false;
-        fprintf(stderr, "normStreamer: receiver ready.\n");
     }
     if (sender)
     {
@@ -413,7 +480,7 @@ bool NormStreamer::Start(bool sender, bool receiver)
             if (receiver) NormStopReceiver(norm_session);
             return false;
         }
-        //NormSetAutoParity(norm_session, 2);
+        //NormSetAutoParity(norm_session, 4);
         NormSetTxSocketBuffer(norm_session, txSockBufferSize);
         if (NORM_OBJECT_INVALID == (tx_stream = NormStreamOpen(norm_session, bufferSize)))
         {
@@ -567,6 +634,9 @@ void NormStreamer::SendData()
         // Note WriteToStream() or FlushStream() will set "tx_ready" to 
         // false upon flow control thus negating TxReady() status
         assert(input_index < input_msg_length);
+        assert(input_msg_length);
+        if (m_check_sequence_number_enabled && (0 == input_index))
+            checkSequenceNumber(input_buffer+MSG_HEADER_SIZE);
         input_index += WriteToStream(input_buffer + input_index, input_msg_length - input_index);
         if (input_index == input_msg_length)
         {
@@ -594,22 +664,18 @@ unsigned int NormStreamer::WriteToStream(const char* buffer, unsigned int numByt
         {
             // 1) How many buffer bytes are available?
             unsigned int bytesAvailable = tx_segment_size * (tx_stream_buffer_max - tx_stream_buffer_count);
-            bytesAvailable -= tx_stream_bytes_remain;  // unflushed segment portiomn
-            if (numBytes <= bytesAvailable) 
-            {
-                unsigned int totalBytes = numBytes + tx_stream_bytes_remain;
-                unsigned int numSegments = totalBytes / tx_segment_size;
-                tx_stream_bytes_remain = totalBytes % tx_segment_size;
-                tx_stream_buffer_count += numSegments;
-            }
-            else
-            {
-                numBytes = bytesAvailable;
-                tx_stream_buffer_count = tx_stream_buffer_max;
-            }
+            bytesAvailable -= tx_stream_bytes_remain;  // unflushed segment portion
+            if (bytesAvailable < numBytes) numBytes = bytesAvailable;
+            assert(numBytes);
             // 2) Write to the stream
             bytesWritten = NormStreamWrite(tx_stream, buffer, numBytes);
             tx_byte_count += bytesWritten;
+            // 3) Update "tx_stream_buffer_count" accordingly
+            unsigned int totalBytes = bytesWritten + tx_stream_bytes_remain;
+            unsigned int numSegments = totalBytes / tx_segment_size;
+            tx_stream_bytes_remain = totalBytes % tx_segment_size;
+            tx_stream_buffer_count += numSegments;
+            
             //assert(bytesWritten == numBytes);  // this could fail if timer-based flow control is left enabled
             // 3) Check if we need to issue a watermark ACK request?
             if (!tx_watermark_pending && (tx_stream_buffer_count >= tx_stream_buffer_threshold))
@@ -634,6 +700,7 @@ unsigned int NormStreamer::WriteToStream(const char* buffer, unsigned int numByt
     if (bytesWritten != numBytes) //NormStreamWrite() was (at least partially) blocked
     {
         //fprintf(stderr, "NormStreamWrite() blocked by flow control ...\n");
+        perror("NormStreamWrite() blocked by flow control ...");
         tx_ready = false;
     }
     return bytesWritten;
@@ -768,6 +835,8 @@ void NormStreamer::WriteOutputSocket()
         assert(output_index < output_msg_length);
         unsigned int payloadSize = output_msg_length - MSG_HEADER_SIZE;
         unsigned int numBytes = payloadSize;
+        if (m_check_sequence_number_enabled)
+            checkSequenceNumber(output_buffer+MSG_HEADER_SIZE);
         if (output_socket.SendTo(output_buffer+MSG_HEADER_SIZE, numBytes, relay_addr))
         {
             if (numBytes != payloadSize)
@@ -792,6 +861,8 @@ void NormStreamer::WriteOutput()
     while (output_ready && !rx_needed)
     {
         assert(output_index < output_msg_length);
+        if (m_check_sequence_number_enabled && (0 == output_index))
+            checkSequenceNumber(output_buffer+MSG_HEADER_SIZE);
         ssize_t result = write(output_fd, output_buffer + output_index, output_msg_length - output_index);
         if (result >= 0)
         {
@@ -900,12 +971,17 @@ void NormStreamer::HandleNormEvent(const NormEvent& event)
         
         case NORM_RX_OBJECT_ABORTED:
             //fprintf(stderr, "NORM_RX_OBJECT_ABORTED\n");// %hu\n", NormObjectGetTransportId(event.object));
+            rx_stream = NORM_OBJECT_INVALID;
+            rx_needed = false;
+            rx_ready = false;
             break;
             
         case NORM_RX_OBJECT_COMPLETED:
             // Rx stream has closed 
             // TBD - set state variables so any pending output is
             //       written out and things shutdown if not sender, too
+            rx_stream = NORM_OBJECT_INVALID;
+            rx_needed = false;
             rx_ready = false;
             break;
             
@@ -922,7 +998,7 @@ void Usage()
     fprintf(stderr, "Usage: normStreamer id <nodeId> {send | recv} [addr <addr>[/<port>]][ack <node1>[,<node2>,...]\n"
                     "                    [cc|cce|ccl|rate <bitsPerSecond>][interface <name>]\n"
                     "                    [listen [<mcastAddr>/]<port>][relay <dstAddr>/<port>][output <device>]\n"
-                    "                    [boost][debug <level>][trace][log <logfile>]\n");
+                    "                    [boost][debug <level>][trace][log <logfile>] [chkseq]\n");
                     //"                    [omit][silent][txloss <lossFraction>]\n");
 }
 int main(int argc, char* argv[])
@@ -956,7 +1032,7 @@ int main(int argc, char* argv[])
     bool silentReceiver = false;
     double txloss = 0.0;
     bool boostPriority = false;
-    
+    bool checkSeq = false ;
     NormStreamer normStreamer;
     
     // Parse command-line
@@ -1167,6 +1243,11 @@ int main(int argc, char* argv[])
 			}
 			listenerMcastIface = argv[i++];
 		}
+		else if ( 0 == strncmp(cmd,"chkseq", len) )
+		{
+			checkSeq = true ;
+
+		}
         else if (0 == strncmp(cmd, "omit", len))
         {
             omitHeaderOnOutput = true;
@@ -1256,7 +1337,8 @@ int main(int argc, char* argv[])
         Usage();
         return -1;
     }
-    
+    normStreamer.SetCheckSequence(checkSeq) ;
+
     normStreamer.SetLoopback(loopback);
     
     if (omitHeaderOnOutput) normStreamer.OmitHeader(true);

@@ -609,6 +609,8 @@ class NormMsg
             {return (Type)(((UINT8*)buffer)[TYPE_OFFSET] & 0x0f);}
         UINT16 GetHeaderLength() 
             {return ((UINT8*)buffer)[HDR_LEN_OFFSET] << 2;}
+        UINT16 GetBaseHeaderLength()
+            {return header_length_base;}
         UINT16 GetSequence() const
         {
             return (ntohs((((UINT16*)buffer)[SEQUENCE_OFFSET])));   
@@ -619,7 +621,7 @@ class NormMsg
         }
         const ProtoAddress& GetDestination() const {return addr;}
         const ProtoAddress& GetSource() const {return addr;}
-        const char* GetBuffer() {return ((char*)buffer);}
+        const char* GetBuffer() const {return ((char*)buffer);}
         UINT16 GetLength() const {return length;}     
         
         // To retrieve any attached header extensions
@@ -630,7 +632,7 @@ class NormMsg
             UINT16 nextOffset = 
                 (UINT16)(currentBuffer ? (currentBuffer - buffer + (ext.GetLength()/4)) : 
 			                    (header_length_base/4));
-            bool result = (nextOffset < (header_length/4));
+            bool result = HasExtensions() ? (nextOffset < (header_length/4)) : false;
             ext.AttachBuffer(result ? (buffer+nextOffset) : (UINT32*)NULL);
             return result;
         }
@@ -1854,6 +1856,7 @@ class NormNackMsg : public NormMsg
         {
             // Copy header from "nack"
             memcpy(buffer, nack.buffer, nack.GetHeaderLength());
+            header_length_base = nack.header_length_base;
             length = header_length = nack.GetHeaderLength();
         }
         void AppendRepairRequest(const NormRepairRequest request)

@@ -783,6 +783,20 @@ NormBlock* NormBlockBuffer::Find(const NormBlockId& blockId) const
 
 #endif // if/else USE_PROTO_TREE
 
+NormBlockId NormBlockBuffer::RangeMin() const
+{
+    if (range_max > 1)
+    {
+        NormBlockId rangeMin = range_hi;
+        Decrement(rangeMin, range_max - 1);
+        return rangeMin;
+    }
+    else
+    {
+        return range_lo;
+    }
+}  // end NormBlockBuffer::RangeMin()
+
 bool NormBlockBuffer::CanInsert(NormBlockId blockId) const
 {
     if (0 != range)

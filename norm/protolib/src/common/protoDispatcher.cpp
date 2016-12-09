@@ -1026,6 +1026,7 @@ void ProtoDispatcher::Wait()
 #endif // if/else HAVE_PSELECT
     //double timerDelay = ProtoTimerMgr::GetTimeRemaining();
     double timerDelay = timer_delay;
+    //TRACE("Wait() timerDelay:%lf\n", timerDelay);
     if (timerDelay < 0.0)
     {
         timeoutPtr = NULL; 

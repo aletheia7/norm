@@ -47,6 +47,7 @@ void ProtoTime::operator+=(const ProtoTime& t)
     }
 }  // end ProtoTime::operator+=() 
 
+/* (COMMENTED OUT BECAUSE NOT SURE IF CORRECT AND DON'T THINK IT'S USED)
 void ProtoTime::operator-=(double sec)
 {
     unsigned long secInt = (unsigned long)sec;
@@ -74,6 +75,7 @@ void ProtoTime::operator-=(double sec)
         tval.tv_sec -= secInt;
     }
 }  // end ProtoTime::operator-=()
+*/
 
 double ProtoTime::GetOffsetValue() const
 {

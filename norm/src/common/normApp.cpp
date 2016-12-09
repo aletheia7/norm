@@ -2232,7 +2232,7 @@ bool NormApp::OnStartup(int argc, const char*const* argv)
             session->ReceiverSetSilent(silent_receiver);
             if (preallocate_sender)
             {
-                if (!session->PreallocateRemoteSender(segment_size, ndata, nparity))
+                if (!session->PreallocateRemoteSender(rx_buffer_size, segment_size, ndata, nparity))
                 {
                     PLOG(PL_FATAL, "NormApp::OnStartup() remote sender preallocation error!\n");
                     session_mgr.Destroy();

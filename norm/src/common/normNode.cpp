@@ -190,12 +190,13 @@ void NormSenderNode::Close()
     
 }  // end NormSenderNode::Close()
 
-bool NormSenderNode::AllocateBuffers(UINT8  fecId,
-                                     UINT16 fecInstanceId,
-                                     UINT8  fecM,
-                                     UINT16 segmentSize, 
-                                     UINT16 numData, 
-                                     UINT16 numParity)
+bool NormSenderNode::AllocateBuffers(unsigned int   bufferSpace,
+                                     UINT8          fecId,
+                                     UINT16         fecInstanceId,
+                                     UINT8          fecM,
+                                     UINT16         segmentSize, 
+                                     UINT16         numData, 
+                                     UINT16         numParity)
 {    
     ASSERT(IsOpen());
     // Calculate how much memory each buffered block will require
@@ -203,8 +204,6 @@ bool NormSenderNode::AllocateBuffers(UINT8  fecId,
     unsigned long maskSize = blockSize >> 3;
     if (0 != (blockSize & 0x07)) maskSize++;
     unsigned long blockStateSpace = sizeof(NormBlock) +  blockSize * sizeof(char*) + 2*maskSize;
-    unsigned long bufferSpace = session.RemoteSenderBufferSize();
-
     // The "bufferFactor" weight determines the ratio of segment buffers (blockSegmentSpace) to
     // allocated NormBlock (blockStateSpace).  
     // If "bufferFactor = 1.0", this is equivalent to the old scheme, where every allocated
@@ -1408,7 +1407,7 @@ void NormSenderNode::HandleObjectMessage(const NormObjectMsg& msg)
                 // (TBD) notify app of error ??
                 return;  
             }
-            if (!AllocateBuffers(fecId, ftiData.GetFecInstanceId(), ftiData.GetFecFieldSize(), 
+            if (!AllocateBuffers(session.RemoteSenderBufferSize(), fecId, ftiData.GetFecInstanceId(), ftiData.GetFecFieldSize(), 
                                  ftiData.GetSegmentSize(), ftiData.GetFecMaxBlockLen(), ftiData.GetFecNumParity()))
             {
                 PLOG(PL_ERROR, "NormSenderNode::HandleObjectMessage() node>%lu sender>%lu buffer allocation error\n",
