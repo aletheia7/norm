@@ -2,7 +2,7 @@
 // governed by a BSD-2-Clause license that can be found in the LICENSE file.
 
 /*
-Package provides reliable UDP over multicast and unicast
+Package norm provides reliable UDP over multicast and unicast
 sockets. norm is a cgo wrapper for NACK-Oriented Reliable Multicast (NORM).
 libnorm can replace TCP/IP, and in many use cases, provide greater
 performance.
