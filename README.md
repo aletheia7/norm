@@ -34,7 +34,7 @@ stream_send_recv -h
 stream_send_recv -r &
 stream_send_recv -s
 ```
-##### stream_send_recv (normFileSend/normFileRecv) #####
+##### file_send_recv (normFileSend/normFileRecv) #####
   Ready to run on one machine at 127.0.0.1:6003/6004
 ```sh
 cd examples/file_send_recv 
