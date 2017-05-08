@@ -53,4 +53,4 @@ file_send_recv -s
 Use of this source code is governed by a BSD-2-Clause license that can be found
 in the LICENSE file.
 
-<a href="https://opensource.org/">[![BSD-2-Clause License](img/osi_logo_100X133_90ppi_0.png)]</a>
+<a href="https://opensource.org/"><img src="img/osi_logo_100X133_90ppi_0.png"></img></a>
