@@ -1,9 +1,9 @@
 [![](https://img.shields.io/badge/godoc-reference-blue.svg)](https://godoc.org/github.com/aletheia7/norm) 
 
 ===
-[![](http://www.nrl.navy.mil/itd/ncs/sites/www.nrl.navy.mil.itd.ncs/files/field/image/NormLogo.gif)](http://www.nrl.navy.mil/itd/ncs/products/norm)
+[![](https://www.nrl.navy.mil/itd/ncs/sites/www.nrl.navy.mil.itd.ncs/files/field/image/NormLogo.gif)](https://www.nrl.navy.mil/itd/ncs/products/norm)
 
-[NACK-Oriented Reliable Multicast (NORM)](http://www.nrl.navy.mil/itd/ncs/products/norm)
+[NACK-Oriented Reliable Multicast (NORM)](https://www.nrl.navy.mil/itd/ncs/products/norm)
 
 ===
 
@@ -45,13 +45,12 @@ file_send_recv -s
 ```
 #### NORM Support
 
-  - [NORM Users and Developers List](http://pf.itd.nrl.navy.mil/mailman/listinfo/norm-dev)
-  - [List Archive](http://pf.itd.nrl.navy.mil/pipermail/norm-dev/)
+  - [NORM Users and Developers List](https://pf.itd.nrl.navy.mil/mailman/listinfo/norm-dev)
+  - [List Archive](https://pf.itd.nrl.navy.mil/pipermail/norm-dev/)
 
 #### License 
 
 Use of this source code is governed by a BSD-2-Clause license that can be found
 in the LICENSE file.
 
-[![BSD-2-Clause License](img/osi_logo_100X133_90ppi_0.png)]
-(https://opensource.org/)
+<a href="https://opensource.org/">[![BSD-2-Clause License](img/osi_logo_100X133_90ppi_0.png)]</a>
